@@ -1,0 +1,23 @@
+name: run
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+
+jobs:
+  basic-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: run/go.mod
+      - name: Build Go launcher
+        run: |
+          cd run
+          go build ./...
+          go test ./...
+      - name: Validate shell entrypoints
+        run: |
+          bash -n bin/setup-vm
+          bash -n bin/run-vm

@@ -1,0 +1,41 @@
+#!/usr/bin/expect -f
+
+set timeout -1
+set debug 5
+
+if {![info exists env(TARGET_QCOW2)]} {
+  puts stderr "TARGET_QCOW2 is required"
+  exit 1
+}
+
+set qemu [expr {[info exists env(QEMU_SYSTEM)] ? $env(QEMU_SYSTEM) : "qemu-system-x86_64"}]
+
+spawn $qemu -enable-kvm -m 2G -smp 4 \
+  -drive file=$env(TARGET_QCOW2),index=1,media=disk,if=virtio \
+  -nographic -nic none
+
+expect "bootfile="
+send "\n"
+expect ">"
+send "console=0\n"
+expect ">"
+send "boot\n"
+expect "bootargs is"
+send "\n"
+expect "user"
+send "\n"
+expect "%"
+send "9fs 9fat\n"
+expect "%"
+send "echo 'console=0' >> /n/9/plan9.ini\n"
+expect "%"
+send "sed '/#m/d' /usr/glenda/lib/profile > /tmp/profile\n"
+expect "%"
+send "mv /tmp/profile /usr/glenda/lib/profile\n"
+expect "%"
+send "echo 'webfs' >> /usr/glenda/lib/profile\n"
+expect "%"
+send "echo 'bind -b ''#S'' /dev' >> /usr/glenda/lib/profile\n"
+expect "%"
+send "fshalt\n"
+expect "done halting"

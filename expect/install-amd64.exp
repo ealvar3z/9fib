@@ -1,0 +1,140 @@
+#!/usr/bin/expect -f
+
+set timeout -1
+set debug 5
+
+if {![info exists env(FS)]} {
+  puts stderr "FS is required"
+  exit 1
+}
+if {![info exists env(SOURCE_QCOW2)]} {
+  puts stderr "SOURCE_QCOW2 is required"
+  exit 1
+}
+if {![info exists env(TARGET_QCOW2)]} {
+  puts stderr "TARGET_QCOW2 is required"
+  exit 1
+}
+
+set qemu [expr {[info exists env(QEMU_SYSTEM)] ? $env(QEMU_SYSTEM) : "qemu-system-x86_64"}]
+
+spawn $qemu -enable-kvm -m 2G -smp 4 \
+  -drive file=$env(SOURCE_QCOW2),media=disk,if=virtio,index=0 \
+  -drive file=$env(TARGET_QCOW2),index=1,media=disk,if=virtio \
+  -nographic -nic none
+
+expect "bootfile="
+send "\n"
+expect ">"
+send "console=0\n"
+expect ">"
+send "boot\n"
+expect "bootargs is"
+send "\n"
+expect "user"
+send "\n"
+expect "%"
+
+send "inst/start\n"
+expect "Task to do"
+
+send "configfs\n"
+expect "File system"
+if {$env(FS) == "cwfs"} {
+  send "cwfs64x\n"
+} else {
+  send "$env(FS)\n"
+}
+expect "Task to do"
+
+send "partdisk\n"
+expect "Disk to partition"
+send "sdG0\n"
+expect "Install mbr"
+send "mbr\n"
+expect ">>>"
+send "w\n"
+expect ">>>"
+send "q\n"
+expect "Task to do"
+
+send "prepdisk\n"
+expect "Plan 9 partition"
+send "/dev/sdG0/plan9\n"
+expect ">>>"
+send "w\n"
+expect ">>>"
+send "q\n"
+expect "Task to do"
+
+send "mountfs\n"
+if {$env(FS) == "cwfs"} {
+  expect "Cwfs cache partition"
+  send "/dev/sdG0/fscache\n"
+  expect "Cwfs worm partition"
+  send "/dev/sdG0/fsworm\n"
+  expect "Cwfs other partition"
+  send "/dev/sdG0/other\n"
+} elseif {$env(FS) == "hjfs"} {
+  expect "Hjfs partition"
+  send "/dev/sdG0/fs\n"
+  expect "Size of RAM filesystem"
+  send "\n"
+} else {
+  expect "Gefs partition"
+  send "/dev/sdG0/fs\n"
+}
+expect "Ream the filesystem"
+send "yes\n"
+expect "Task to do"
+
+send "confignet\n"
+expect "Task to do"
+
+send "mountdist\n"
+expect "Distribution disk"
+send "/\n"
+expect "Location of archives"
+send "/\n"
+expect "Task to do"
+
+send "copydist\n"
+expect "Task to do"
+
+send "ndbsetup\n"
+expect "sysname"
+send "\n"
+expect "Task to do"
+
+send "tzsetup\n"
+expect "Time Zone"
+expect "W-SU"
+send "US_Central\n"
+expect "Task to do"
+
+send "bootsetup\n"
+expect "Plan 9 FAT partition"
+send "/dev/sdG0/9fat\n"
+expect "Install the Plan 9 master"
+send "yes\n"
+expect "Mark the Plan 9"
+send "yes\n"
+expect "Task to do"
+
+send "!rc\n"
+expect "%"
+send "sed '/#m/d' /n/newfs/usr/glenda/lib/profile > /tmp/profile\n"
+expect "%"
+send "mv /tmp/profile /n/newfs/usr/glenda/lib/profile\n"
+expect "%"
+send "echo 'webfs' >> /n/newfs/usr/glenda/lib/profile\n"
+expect "%"
+send "echo 'bind -b ''#S'' /dev' >> /n/newfs/usr/glenda/lib/profile\n"
+expect "%"
+send "cp /sys/lib/dist/ndb/local /n/newfs/lib/ndb/local\n"
+expect "%"
+send "exit\n"
+expect "Task to do"
+
+send "finish\n"
+expect "done halting"

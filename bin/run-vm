@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: bin/run-vm [--fs hjfs|cwfs|gefs] [--disk PATH] [--drawterm PATH] [--nogui] [run-flags...]
+
+Starts a local 9front amd64 VM and connects with drawterm.
+Extra flags are passed through to the Go launcher in ./run.
+EOF
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "${script_dir}/.." && pwd)"
+
+fs="hjfs"
+disk=""
+drawterm_bin=""
+nogui=0
+pass_args=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --fs)
+      [[ $# -ge 2 ]] || die "--fs requires a value"
+      fs="$2"
+      shift 2
+      ;;
+    --disk)
+      [[ $# -ge 2 ]] || die "--disk requires a value"
+      disk="$2"
+      shift 2
+      ;;
+    --drawterm)
+      [[ $# -ge 2 ]] || die "--drawterm requires a value"
+      drawterm_bin="$2"
+      shift 2
+      ;;
+    --nogui)
+      nogui=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      pass_args+=("$1")
+      shift
+      ;;
+  esac
+done
+
+case "$fs" in
+  hjfs|cwfs|gefs)
+    ;;
+  *)
+    die "unsupported filesystem: $fs"
+    ;;
+esac
+
+need_cmd go
+need_cmd qemu-system-x86_64
+
+if [[ -z "$drawterm_bin" ]]; then
+  drawterm_bin="$(command -v drawterm || true)"
+fi
+[[ -n "$drawterm_bin" ]] || die "drawterm not found on PATH"
+if [[ "$drawterm_bin" == */* ]]; then
+  drawterm_bin="$(cd "$(dirname "$drawterm_bin")" && pwd)/$(basename "$drawterm_bin")"
+fi
+
+if [[ -z "$disk" ]]; then
+  disk="9front.${fs}.amd64.qcow2"
+fi
+
+[[ -f "$disk" ]] || die "disk image not found: $disk"
+disk="$(cd "$(dirname "$disk")" && pwd)/$(basename "$disk")"
+
+cmd=(go run . -arch amd64 -fs "$fs" -disk "$disk" -dt "$drawterm_bin")
+if [[ "$nogui" -eq 1 ]]; then
+  cmd+=(-nogui)
+fi
+cmd+=("${pass_args[@]}")
+
+cd "$repo_root/run"
+exec "${cmd[@]}"

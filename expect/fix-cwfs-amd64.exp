@@ -1,0 +1,43 @@
+#!/usr/bin/expect -f
+
+set timeout -1
+set debug 5
+
+if {![info exists env(TARGET_QCOW2)]} {
+  puts stderr "TARGET_QCOW2 is required"
+  exit 1
+}
+
+set qemu [expr {[info exists env(QEMU_SYSTEM)] ? $env(QEMU_SYSTEM) : "qemu-system-x86_64"}]
+
+spawn $qemu -enable-kvm -m 2G -smp 4 \
+  -drive file=$env(TARGET_QCOW2),index=1,media=disk,if=virtio \
+  -nographic -nic none
+
+expect "bootfile="
+send "\n"
+expect ">"
+send "console=0\n"
+expect ">"
+send "boot\n"
+expect "bootargs is"
+send "!rc\n"
+expect "%"
+send "cwfs64x -C -c -f /dev/sdF0/fscache\n"
+expect "config:"
+send "filsys main c(/dev/sdF0/fscache)(/dev/sdF0/fsworm)\n"
+expect "config:"
+send "filsys other (/dev/sdF0/other)\n"
+expect "config:"
+send "filsys dump o\n"
+expect "config:"
+send "end\n"
+expect "%"
+send "exit\n"
+expect "bootargs is"
+send "local!/dev/sdF0/fscache\n"
+expect "user"
+send "\n"
+expect "%"
+send "fshalt\n"
+expect "done halting"

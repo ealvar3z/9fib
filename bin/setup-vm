@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: bin/setup-vm [--fs hjfs|cwfs|gefs] [--release N | --latest] [--source-url URL] [--disk PATH]
+
+Downloads a 9front amd64 release image and prepares a local qcow2 disk.
+EOF
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "${script_dir}/.." && pwd)"
+
+fs="hjfs"
+release="11554"
+latest=0
+source_url=""
+disk=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --fs)
+      [[ $# -ge 2 ]] || die "--fs requires a value"
+      fs="$2"
+      shift 2
+      ;;
+    --release)
+      [[ $# -ge 2 ]] || die "--release requires a value"
+      release="$2"
+      shift 2
+      ;;
+    --latest)
+      latest=1
+      shift
+      ;;
+    --source-url)
+      [[ $# -ge 2 ]] || die "--source-url requires a value"
+      source_url="$2"
+      shift 2
+      ;;
+    --disk)
+      [[ $# -ge 2 ]] || die "--disk requires a value"
+      disk="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+case "$fs" in
+  hjfs|cwfs|gefs)
+    ;;
+  *)
+    die "unsupported filesystem: $fs"
+    ;;
+esac
+
+need_cmd curl
+need_cmd expect
+need_cmd gzip
+need_cmd qemu-img
+need_cmd qemu-system-x86_64
+
+if [[ -z "$disk" ]]; then
+  disk="9front.${fs}.amd64.qcow2"
+fi
+
+cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/9front-in-a-box"
+mkdir -p "${cache_root}/releases"
+
+if [[ "$latest" -eq 1 ]]; then
+  if [[ -z "$source_url" ]]; then
+    source_url="https://build.9front.org/9front"
+  fi
+  release="$(curl -fsSL "${source_url}/latest")"
+else
+  if [[ -z "$source_url" ]]; then
+    source_url="https://build.9front.org/release"
+  fi
+fi
+
+release_gz="${cache_root}/releases/9front-${release}.amd64.qcow2.gz"
+release_qcow2="${cache_root}/releases/9front-${release}.amd64.qcow2"
+download_url="${source_url}/9front-${release}.amd64.qcow2.gz"
+
+if [[ ! -f "$release_gz" ]]; then
+  printf 'Downloading %s\n' "$download_url" >&2
+  curl -fL "$download_url" -o "${release_gz}.tmp"
+  mv "${release_gz}.tmp" "$release_gz"
+fi
+
+if [[ ! -f "$release_qcow2" ]]; then
+  printf 'Extracting %s\n' "$release_gz" >&2
+  gzip -dc "$release_gz" > "${release_qcow2}.tmp"
+  mv "${release_qcow2}.tmp" "$release_qcow2"
+fi
+
+target_disk="$(realpath -m "$disk")"
+rm -f "$target_disk"
+
+case "$fs" in
+  hjfs)
+    qemu-img create -f qcow2 -F qcow2 -b "$release_qcow2" "$target_disk" >/dev/null
+    TARGET_QCOW2="$target_disk" \
+      QEMU_SYSTEM="qemu-system-x86_64" \
+      expect "${repo_root}/expect/fix-hjfs-amd64.exp"
+    ;;
+  cwfs|gefs)
+    qemu-img create -f qcow2 "$target_disk" 50G >/dev/null
+    SOURCE_QCOW2="$release_qcow2" \
+      TARGET_QCOW2="$target_disk" \
+      FS="$fs" \
+      QEMU_SYSTEM="qemu-system-x86_64" \
+      expect "${repo_root}/expect/install-amd64.exp"
+    if [[ "$fs" == "cwfs" ]]; then
+      TARGET_QCOW2="$target_disk" \
+        QEMU_SYSTEM="qemu-system-x86_64" \
+        expect "${repo_root}/expect/fix-cwfs-amd64.exp"
+    fi
+    ;;
+esac
+
+printf 'Created %s\n' "$target_disk"
