@@ -3,9 +3,10 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: bin/run-vm [--fs hjfs|cwfs|gefs] [--disk PATH] [--drawterm PATH] [--nogui] [run-flags...]
+Usage: bin/run-vm [--fs hjfs|cwfs|gefs] [--disk PATH] [--drawterm PATH] [--usb SPEC] [--nogui] [run-flags...]
 
 Starts a local 9front amd64 VM and connects with drawterm.
+USB passthrough SPEC may be repeated and must be bus=BUS,addr=ADDR or vendor=VID,product=PID.
 Extra flags are passed through to the Go launcher in ./run.
 EOF
 }
@@ -27,6 +28,7 @@ disk=""
 drawterm_bin=""
 nogui=0
 pass_args=()
+usb_args=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -43,6 +45,11 @@ while [[ $# -gt 0 ]]; do
     --drawterm)
       [[ $# -ge 2 ]] || die "--drawterm requires a value"
       drawterm_bin="$2"
+      shift 2
+      ;;
+    --usb)
+      [[ $# -ge 2 ]] || die "--usb requires a value"
+      usb_args+=("$2")
       shift 2
       ;;
     --nogui)
@@ -90,6 +97,9 @@ cmd=(go run . -arch amd64 -fs "$fs" -disk "$disk" -dt "$drawterm_bin")
 if [[ "$nogui" -eq 1 ]]; then
   cmd+=(-nogui)
 fi
+for usb in "${usb_args[@]}"; do
+  cmd+=(-usb "$usb")
+done
 cmd+=("${pass_args[@]}")
 
 cd "$repo_root/run"

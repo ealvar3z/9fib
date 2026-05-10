@@ -15,6 +15,17 @@ import (
 	expect "github.com/google/goexpect"
 )
 
+type stringList []string
+
+func (l *stringList) String() string {
+	return strings.Join(*l, ",")
+}
+
+func (l *stringList) Set(value string) error {
+	*l = append(*l, value)
+	return nil
+}
+
 var (
 	ramFlag      = flag.String("m", "4G", "memory for qemu virtual machine")
 	cpuFlag      = flag.String("cpu", "4", "number of cores for the virtual machine")
@@ -26,7 +37,51 @@ var (
 	qpathFlag    = flag.String("qpath", "", "optional directory containing qemu binaries")
 	drawtermFlag = flag.String("dt", "drawterm", "drawterm binary")
 	noguiFlag    = flag.Bool("nogui", false, "disable the GUI")
+	usbFlags     stringList
 )
+
+func init() {
+	flag.Var(&usbFlags, "usb", "pass a host USB device through to qemu; repeatable; use bus=BUS,addr=ADDR or vendor=VID,product=PID")
+}
+
+func qemuUSBDevice(spec string) (string, error) {
+	parts := strings.Split(spec, ",")
+	values := make(map[string]string, len(parts))
+	for _, part := range parts {
+		k, v, ok := strings.Cut(part, "=")
+		if !ok {
+			return "", fmt.Errorf("USB spec %q must use key=value fields", spec)
+		}
+		k = strings.TrimSpace(k)
+		v = strings.TrimSpace(v)
+		if k == "" || v == "" {
+			return "", fmt.Errorf("USB spec %q has an empty key or value", spec)
+		}
+		values[k] = v
+	}
+
+	switch {
+	case values["bus"] != "" && values["addr"] != "":
+		if len(values) != 2 {
+			return "", fmt.Errorf("USB bus/addr spec %q only accepts bus and addr", spec)
+		}
+		return "usb-host,hostbus=" + values["bus"] + ",hostaddr=" + values["addr"], nil
+	case values["vendor"] != "" && values["product"] != "":
+		if len(values) != 2 {
+			return "", fmt.Errorf("USB vendor/product spec %q only accepts vendor and product", spec)
+		}
+		return "usb-host,vendorid=" + qemuHexID(values["vendor"]) + ",productid=" + qemuHexID(values["product"]), nil
+	default:
+		return "", fmt.Errorf("USB spec %q must include bus+addr or vendor+product", spec)
+	}
+}
+
+func qemuHexID(value string) string {
+	if strings.HasPrefix(value, "0x") || strings.HasPrefix(value, "0X") {
+		return value
+	}
+	return "0x" + value
+}
 
 func qemuCmd(qcow string) []string {
 	m := map[string][]string{
@@ -82,6 +137,16 @@ func qemuCmd(qcow string) []string {
 		log.Fatal("unsupported arch")
 	}
 	r[len(r)-1] = r[len(r)-1] + ",file=" + qcow
+	if len(usbFlags) > 0 {
+		r = append(r, "-usb")
+		for _, usb := range usbFlags {
+			device, err := qemuUSBDevice(usb)
+			if err != nil {
+				log.Fatal(err)
+			}
+			r = append(r, "-device", device)
+		}
+	}
 	return r
 }
 
@@ -103,7 +168,7 @@ func main() {
 	if *debugFlag {
 		fmt.Println(cm)
 	}
-	exp, _, err := expect.Spawn(cm, -1)
+	exp, _, err := expect.SpawnWithArgs(qemuCmd(qcow), -1)
 	if err != nil {
 		log.Fatal(err)
 	}

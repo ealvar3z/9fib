@@ -74,6 +74,18 @@ bin/run-vm --fs cwfs
 bin/run-vm --drawterm /usr/bin/drawterm
 ```
 
+To pass a host USB device through to 9front, identify it with `lsusb`, then
+use either its bus/address or vendor/product IDs:
+
+```bash
+bin/run-vm --usb bus=1,addr=4
+bin/run-vm --usb vendor=046d,product=c52b
+```
+
+`--usb` can be repeated for multiple devices. Your user must have permission
+to access the host USB device, usually through udev rules or by running QEMU
+with sufficient privileges.
+
 Extra flags are passed through to the Go launcher in `run/`, so existing flags
 such as `-debug`, `-m`, or `-cpu` can still be used:
 
