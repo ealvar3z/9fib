@@ -7,7 +7,7 @@ func TestQEMUUSBDeviceBusAddress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "usb-host,hostbus=1,hostaddr=4"
+	want := "usb-host,bus=xhci.0,hostbus=1,hostaddr=4"
 	if got != want {
 		t.Fatalf("qemuUSBDevice() = %q, want %q", got, want)
 	}
@@ -18,7 +18,7 @@ func TestQEMUUSBDeviceVendorProduct(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "usb-host,vendorid=0x046d,productid=0xc52b"
+	want := "usb-host,bus=xhci.0,vendorid=0x046d,productid=0xc52b"
 	if got != want {
 		t.Fatalf("qemuUSBDevice() = %q, want %q", got, want)
 	}

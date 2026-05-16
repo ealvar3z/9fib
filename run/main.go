@@ -65,12 +65,12 @@ func qemuUSBDevice(spec string) (string, error) {
 		if len(values) != 2 {
 			return "", fmt.Errorf("USB bus/addr spec %q only accepts bus and addr", spec)
 		}
-		return "usb-host,hostbus=" + values["bus"] + ",hostaddr=" + values["addr"], nil
+		return "usb-host,bus=xhci.0,hostbus=" + values["bus"] + ",hostaddr=" + values["addr"], nil
 	case values["vendor"] != "" && values["product"] != "":
 		if len(values) != 2 {
 			return "", fmt.Errorf("USB vendor/product spec %q only accepts vendor and product", spec)
 		}
-		return "usb-host,vendorid=" + qemuHexID(values["vendor"]) + ",productid=" + qemuHexID(values["product"]), nil
+		return "usb-host,bus=xhci.0,vendorid=" + qemuHexID(values["vendor"]) + ",productid=" + qemuHexID(values["product"]), nil
 	default:
 		return "", fmt.Errorf("USB spec %q must include bus+addr or vendor+product", spec)
 	}
@@ -138,7 +138,7 @@ func qemuCmd(qcow string) []string {
 	}
 	r[len(r)-1] = r[len(r)-1] + ",file=" + qcow
 	if len(usbFlags) > 0 {
-		r = append(r, "-usb")
+		r = append(r, "-device", "qemu-xhci,id=xhci")
 		for _, usb := range usbFlags {
 			device, err := qemuUSBDevice(usb)
 			if err != nil {
@@ -148,6 +148,29 @@ func qemuCmd(qcow string) []string {
 		}
 	}
 	return r
+}
+
+func fatalExpect(errCh <-chan error, context string, err error) {
+	select {
+	case procErr := <-errCh:
+		if procErr != nil {
+			log.Fatalf("%s: qemu exited: %v", context, procErr)
+		}
+	default:
+	}
+	log.Fatalf("%s: %v", context, err)
+}
+
+func mustExpect(exp *expect.GExpect, errCh <-chan error, re string) {
+	if _, _, err := exp.Expect(regexp.MustCompile(re), -1); err != nil {
+		fatalExpect(errCh, "waiting for "+re, err)
+	}
+}
+
+func mustSend(exp *expect.GExpect, errCh <-chan error, in string) {
+	if err := exp.Send(in); err != nil {
+		fatalExpect(errCh, "sending input", err)
+	}
 }
 
 func main() {
@@ -164,11 +187,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	cm := strings.Join(qemuCmd(qcow), " ")
+	qemuArgs := qemuCmd(qcow)
+	cm := strings.Join(qemuArgs, " ")
 	if *debugFlag {
 		fmt.Println(cm)
 	}
-	exp, _, err := expect.SpawnWithArgs(qemuCmd(qcow), -1)
+	exp, errCh, err := expect.SpawnWithArgs(qemuArgs, -1)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -177,21 +201,21 @@ func main() {
 	if *debugFlag {
 		exp.Options(expect.Tee(os.Stdout))
 	}
-	exp.Expect(regexp.MustCompile("bootargs is"), -1)
-	exp.Send("\n")
-	exp.Expect(regexp.MustCompile("user"), -1)
-	exp.Send("\n")
-	exp.Expect(regexp.MustCompile("%"), -1)
-	exp.Send(`echo 'key proto=dp9ik dom=9front user=glenda !password=password' >/mnt/factotum/ctl` + "\n")
-	exp.Expect(regexp.MustCompile("%"), -1)
-	exp.Send("ip/ipconfig -6 ether /net/ether0\n")
-	exp.Expect(regexp.MustCompile("%"), -1)
-	exp.Send("ip/ipconfig ether /net/ether0\n")
-	exp.Expect(regexp.MustCompile("%"), -1)
-	exp.Send("ip/ipconfig ether /net/ether0 ra6 recvra 1\n")
-	exp.Expect(regexp.MustCompile("%"), -1)
-	exp.Send("aux/listen1 -t 'tcp!*!17019' /rc/bin/service/tcp17019 &\n")
-	exp.Expect(regexp.MustCompile("listen started"), -1)
+	mustExpect(exp, errCh, "bootargs is")
+	mustSend(exp, errCh, "\n")
+	mustExpect(exp, errCh, "user")
+	mustSend(exp, errCh, "\n")
+	mustExpect(exp, errCh, "%")
+	mustSend(exp, errCh, `echo 'key proto=dp9ik dom=9front user=glenda !password=password' >/mnt/factotum/ctl`+"\n")
+	mustExpect(exp, errCh, "%")
+	mustSend(exp, errCh, "ip/ipconfig -6 ether /net/ether0\n")
+	mustExpect(exp, errCh, "%")
+	mustSend(exp, errCh, "ip/ipconfig ether /net/ether0\n")
+	mustExpect(exp, errCh, "%")
+	mustSend(exp, errCh, "ip/ipconfig ether /net/ether0 ra6 recvra 1\n")
+	mustExpect(exp, errCh, "%")
+	mustSend(exp, errCh, "aux/listen1 -t 'tcp!*!17019' /rc/bin/service/tcp17019 &\n")
+	mustExpect(exp, errCh, "listen started")
 
 	exitch := make(chan struct{})
 	go func() {
@@ -221,7 +245,7 @@ func main() {
 		exitch <- struct{}{}
 	}()
 	<-exitch
-	exp.Send("fshalt\n")
-	exp.Expect(regexp.MustCompile("done halting"), -1)
+	mustSend(exp, errCh, "fshalt\n")
+	mustExpect(exp, errCh, "done halting")
 	exp.Close()
 }
