@@ -3,9 +3,9 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: bin/setup-vm [--fs hjfs|cwfs|gefs] [--release N | --latest] [--source-url URL] [--disk PATH]
+Usage: bin/setup-vm [--os 9front|freebsd] [--auto-install] [--fs hjfs|cwfs|gefs] [--release N | --latest] [--source-url URL] [--disk PATH]
 
-Downloads a 9front amd64 release image and prepares a local qcow2 disk.
+Downloads a guest image or installer and prepares a local qcow2 disk.
 EOF
 }
 
@@ -18,71 +18,233 @@ need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
 }
 
+freebsd_dist_url() {
+  case "$release" in
+  *-RELEASE)
+    printf 'https://download.freebsd.org/releases/amd64/%s/\n' "$release"
+    ;;
+  *-*)
+    printf 'https://download.freebsd.org/ftp/releases/amd64/%s/\n' "$release"
+    ;;
+  *)
+    printf 'https://download.freebsd.org/releases/amd64/%s-RELEASE/\n' "$release"
+    ;;
+  esac
+}
+
+write_freebsd_installerconfig() {
+  local path="$1"
+  local dist_url="$2"
+  cat >"$path" <<EOF
+export ZFSBOOT_DISKS="vtbd0"
+export ZFSBOOT_VDEV_TYPE="stripe"
+export ZFSBOOT_CONFIRM_LAYOUT=0
+export nonInteractive="YES"
+export DISTRIBUTIONS="kernel.txz base.txz"
+export BSDINSTALL_DISTSITE="${dist_url}"
+export BSDINSTALL_SKIP_KEYMAP=1
+export BSDINSTALL_SKIP_MANUAL=1
+export BSDINSTALL_SKIP_FINALCONFIG=1
+dhclient em0 || dhclient vtnet0 || true
+
+#!/bin/sh
+sysrc hostname=freebsd
+sysrc ifconfig_DEFAULT=DHCP
+sysrc sshd_enable=YES
+printf '%s\n' 'password' | pw usermod root -h 0
+EOF
+}
+
+run_freebsd_autoinstall() {
+  local target_disk="$1"
+  local iso_path="$2"
+  local workdir installerconfig auto_iso dist_url
+
+  need_cmd xorriso
+
+  workdir="$(mktemp -d "${TMPDIR:-/tmp}/9fib-freebsd-autoinstall.XXXXXX")"
+  installerconfig="${workdir}/installerconfig"
+  auto_iso="${workdir}/freebsd-autoinstall.iso"
+  dist_url="$(freebsd_dist_url)"
+
+  trap "rm -rf '$workdir'" EXIT HUP INT TERM
+
+  write_freebsd_installerconfig "$installerconfig" "$dist_url"
+  xorriso -indev "$iso_path" -outdev "$auto_iso" \
+    -map "$installerconfig" /etc/installerconfig \
+    -boot_image any replay >/dev/null
+
+  printf 'Running automated FreeBSD ZFS install\n' >&2
+  qemu-system-x86_64 \
+    -enable-kvm \
+    -m 4G \
+    -smp 4 \
+    -nic user \
+    -drive file="$target_disk",if=virtio,media=disk \
+    -cdrom "$auto_iso" \
+    -boot order=d \
+    -nographic \
+    -no-reboot
+}
+
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
 
 fs="hjfs"
 release="11554"
+release_set=0
 latest=0
 source_url=""
 disk=""
+guest_os="9front"
+iso_kind="disc1"
+disk_size="40G"
+auto_install=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --fs)
-      [[ $# -ge 2 ]] || die "--fs requires a value"
-      fs="$2"
-      shift 2
-      ;;
-    --release)
-      [[ $# -ge 2 ]] || die "--release requires a value"
-      release="$2"
-      shift 2
-      ;;
-    --latest)
-      latest=1
-      shift
-      ;;
-    --source-url)
-      [[ $# -ge 2 ]] || die "--source-url requires a value"
-      source_url="$2"
-      shift 2
-      ;;
-    --disk)
-      [[ $# -ge 2 ]] || die "--disk requires a value"
-      disk="$2"
-      shift 2
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      die "unknown argument: $1"
-      ;;
+  --os)
+    [[ $# -ge 2 ]] || die "--os requires a value"
+    guest_os="$2"
+    shift 2
+    ;;
+  --fs)
+    [[ $# -ge 2 ]] || die "--fs requires a value"
+    fs="$2"
+    shift 2
+    ;;
+  --release)
+    [[ $# -ge 2 ]] || die "--release requires a value"
+    release="$2"
+    release_set=1
+    shift 2
+    ;;
+  --latest)
+    latest=1
+    shift
+    ;;
+  --auto-install)
+    auto_install=1
+    shift
+    ;;
+  --source-url)
+    [[ $# -ge 2 ]] || die "--source-url requires a value"
+    source_url="$2"
+    shift 2
+    ;;
+  --disk)
+    [[ $# -ge 2 ]] || die "--disk requires a value"
+    disk="$2"
+    shift 2
+    ;;
+  --iso-kind)
+    [[ $# -ge 2 ]] || die "--iso-kind requires a value"
+    iso_kind="$2"
+    shift 2
+    ;;
+  --disk-size)
+    [[ $# -ge 2 ]] || die "--disk-size requires a value"
+    disk_size="$2"
+    shift 2
+    ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  *)
+    die "unknown argument: $1"
+    ;;
   esac
 done
 
+case "$guest_os" in
+9front | freebsd)
+  ;;
+*)
+  die "unsupported os: $guest_os"
+  ;;
+esac
+
+if [[ "$auto_install" -eq 1 && "$guest_os" != "freebsd" ]]; then
+  die "--auto-install is only supported with --os freebsd"
+fi
+
 case "$fs" in
-  hjfs|cwfs|gefs)
-    ;;
-  *)
-    die "unsupported filesystem: $fs"
-    ;;
+hjfs | cwfs | gefs)
+  ;;
+*)
+  die "unsupported filesystem: $fs"
+  ;;
 esac
 
 need_cmd curl
-need_cmd expect
-need_cmd gzip
 need_cmd qemu-img
 need_cmd qemu-system-x86_64
 
 if [[ -z "$disk" ]]; then
-  disk="9front.${fs}.amd64.qcow2"
+  case "$guest_os" in
+  9front)
+    disk="9front.${fs}.amd64.qcow2"
+    ;;
+  freebsd)
+    disk="freebsd.amd64.qcow2"
+    ;;
+  esac
 fi
 
 cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/9front-in-a-box"
 mkdir -p "${cache_root}/releases"
+
+if [[ "$guest_os" == "freebsd" ]]; then
+  if [[ "$latest" -eq 1 ]]; then
+    release="15.1-BETA2"
+  elif [[ "$release_set" -eq 0 ]]; then
+    release="15.0"
+  fi
+  case "$iso_kind" in
+  bootonly | disc1 | dvd1)
+    ;;
+  *)
+    die "unsupported freebsd iso kind: $iso_kind"
+    ;;
+  esac
+  if [[ "$auto_install" -eq 1 ]]; then
+    need_cmd xorriso
+  fi
+  release_dir="${release%%-*}"
+  if [[ -z "$source_url" ]]; then
+    source_url="https://download.freebsd.org/releases/amd64/amd64/ISO-IMAGES/${release_dir}"
+  fi
+
+  mkdir -p "${cache_root}/freebsd/releases/${release}"
+  if [[ "$release" == *-* ]]; then
+    iso_name="FreeBSD-${release}-amd64-${iso_kind}.iso"
+  else
+    iso_name="FreeBSD-${release}-RELEASE-amd64-${iso_kind}.iso"
+  fi
+  iso_path="${cache_root}/freebsd/releases/${release}/${iso_name}"
+  download_url="${source_url}/${iso_name}"
+
+  if [[ ! -f "$iso_path" ]]; then
+    printf 'Downloading %s\n' "$download_url" >&2
+    curl -fL "$download_url" -o "${iso_path}.tmp"
+    mv "${iso_path}.tmp" "$iso_path"
+  fi
+
+  target_disk="$(realpath -m "$disk")"
+  rm -f "$target_disk"
+  qemu-img create -f qcow2 "$target_disk" "$disk_size" >/dev/null
+  printf 'Created %s\n' "$target_disk"
+  printf 'Installer ISO %s\n' "$iso_path"
+  if [[ "$auto_install" -eq 1 ]]; then
+    run_freebsd_autoinstall "$target_disk" "$iso_path"
+    printf 'Installed FreeBSD to %s\n' "$target_disk"
+  fi
+  exit 0
+fi
+
+need_cmd expect
+need_cmd gzip
 
 if [[ "$latest" -eq 1 ]]; then
   if [[ -z "$source_url" ]]; then
@@ -107,7 +269,7 @@ fi
 
 if [[ ! -f "$release_qcow2" ]]; then
   printf 'Extracting %s\n' "$release_gz" >&2
-  gzip -dc "$release_gz" > "${release_qcow2}.tmp"
+  gzip -dc "$release_gz" >"${release_qcow2}.tmp"
   mv "${release_qcow2}.tmp" "$release_qcow2"
 fi
 
@@ -115,25 +277,25 @@ target_disk="$(realpath -m "$disk")"
 rm -f "$target_disk"
 
 case "$fs" in
-  hjfs)
-    qemu-img create -f qcow2 -F qcow2 -b "$release_qcow2" "$target_disk" >/dev/null
+hjfs)
+  qemu-img create -f qcow2 -F qcow2 -b "$release_qcow2" "$target_disk" >/dev/null
+  TARGET_QCOW2="$target_disk" \
+    QEMU_SYSTEM="qemu-system-x86_64" \
+    expect "${repo_root}/expect/fix-hjfs-amd64.exp"
+  ;;
+cwfs | gefs)
+  qemu-img create -f qcow2 "$target_disk" 50G >/dev/null
+  SOURCE_QCOW2="$release_qcow2" \
+    TARGET_QCOW2="$target_disk" \
+    FS="$fs" \
+    QEMU_SYSTEM="qemu-system-x86_64" \
+    expect "${repo_root}/expect/install-amd64.exp"
+  if [[ "$fs" == "cwfs" ]]; then
     TARGET_QCOW2="$target_disk" \
       QEMU_SYSTEM="qemu-system-x86_64" \
-      expect "${repo_root}/expect/fix-hjfs-amd64.exp"
-    ;;
-  cwfs|gefs)
-    qemu-img create -f qcow2 "$target_disk" 50G >/dev/null
-    SOURCE_QCOW2="$release_qcow2" \
-      TARGET_QCOW2="$target_disk" \
-      FS="$fs" \
-      QEMU_SYSTEM="qemu-system-x86_64" \
-      expect "${repo_root}/expect/install-amd64.exp"
-    if [[ "$fs" == "cwfs" ]]; then
-      TARGET_QCOW2="$target_disk" \
-        QEMU_SYSTEM="qemu-system-x86_64" \
-        expect "${repo_root}/expect/fix-cwfs-amd64.exp"
-    fi
-    ;;
+      expect "${repo_root}/expect/fix-cwfs-amd64.exp"
+  fi
+  ;;
 esac
 
 printf 'Created %s\n' "$target_disk"

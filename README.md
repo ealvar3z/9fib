@@ -17,10 +17,12 @@ server deployment tool.
 Install the host packages first:
 
 ```bash
-sudo pacman -S --needed go qemu-full expect plan9port
+sudo pacman -S --needed go qemu-full expect plan9port libisoburn
 ```
 
-`plan9port` provides the `drawterm` binary used to connect to the guest.
+`plan9port` provides the `drawterm` binary used to connect to the 9front
+guest. `libisoburn` provides `xorriso`, which is used for automated FreeBSD
+installer media.
 
 ## Setup
 
@@ -51,6 +53,30 @@ bin/setup-vm --release 11554
 bin/setup-vm --disk ./my-9front.qcow2
 ```
 
+To prepare a FreeBSD VM for manual installation:
+
+```bash
+bin/setup-vm --os freebsd
+```
+
+That downloads the FreeBSD amd64 `disc1` installer ISO, creates
+`freebsd.amd64.qcow2`, and leaves installation to the user.
+
+To use the current FreeBSD beta installer:
+
+```bash
+bin/setup-vm --os freebsd --latest
+```
+
+To install FreeBSD automatically with ZFS:
+
+```bash
+bin/setup-vm --os freebsd --auto-install
+```
+
+The automated FreeBSD installer uses a single-disk ZFS setup, DHCP, hostname
+`freebsd`, root password `password`, and enables `sshd`.
+
 ## Running
 
 Start the VM and connect with drawterm:
@@ -67,6 +93,24 @@ For a terminal-only session:
 bin/run-vm --nogui
 ```
 
+To boot the FreeBSD installer:
+
+```bash
+bin/run-vm --os freebsd
+```
+
+For the current FreeBSD beta installer:
+
+```bash
+bin/run-vm --os freebsd --latest
+```
+
+After installing FreeBSD to the virtual disk, boot from the disk with:
+
+```bash
+bin/run-vm --os freebsd --freebsd-boot disk
+```
+
 To select another filesystem image or drawterm binary:
 
 ```bash
@@ -74,7 +118,7 @@ bin/run-vm --fs cwfs
 bin/run-vm --drawterm /usr/bin/drawterm
 ```
 
-To pass a host USB device through to 9front, identify it with `lsusb`, then
+To pass a host USB device through to a guest, identify it with `lsusb`, then
 use either its bus/address or vendor/product IDs:
 
 ```bash
@@ -98,5 +142,7 @@ Instructions for using rio are in the [9front FQA](http://fqa.9front.org/fqa8.ht
 ## Notes
 
 - `arm64` and `386` are not part of the current non-Nix workflow.
-- `--latest` uses the rolling `https://build.9front.org/9front` build stream.
+- For 9front, `--latest` uses the rolling `https://build.9front.org/9front`
+  build stream. For FreeBSD, `--latest` selects the current configured beta
+  installer.
 - The default release pin remains `11554` until it is updated explicitly.

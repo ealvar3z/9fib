@@ -30,13 +30,16 @@ var (
 	ramFlag      = flag.String("m", "4G", "memory for qemu virtual machine")
 	cpuFlag      = flag.String("cpu", "4", "number of cores for the virtual machine")
 	debugFlag    = flag.Bool("debug", false, "enable debug output")
+	osFlag       = flag.String("os", "9front", "guest operating system")
 	archFlag     = flag.String("arch", "amd64", "architecture of vm")
 	fsFlag       = flag.String("fs", "hjfs", "filesystem backing the vm disk")
 	diskFlag     = flag.String("disk", "", "qcow2 vm disk")
+	isoFlag      = flag.String("iso", "", "installer ISO for guests that need one")
 	ubootFlag    = flag.String("uboot", "u-boot.bin", "uboot binary for arm64")
 	qpathFlag    = flag.String("qpath", "", "optional directory containing qemu binaries")
 	drawtermFlag = flag.String("dt", "drawterm", "drawterm binary")
 	noguiFlag    = flag.Bool("nogui", false, "disable the GUI")
+	freebsdBoot  = flag.String("freebsd-boot", "install", "FreeBSD boot mode: install or disk")
 	usbFlags     stringList
 )
 
@@ -83,7 +86,22 @@ func qemuHexID(value string) string {
 	return "0x" + value
 }
 
-func qemuCmd(qcow string) []string {
+func appendUSBDevices(args []string) []string {
+	if len(usbFlags) == 0 {
+		return args
+	}
+	args = append(args, "-device", "qemu-xhci,id=xhci")
+	for _, usb := range usbFlags {
+		device, err := qemuUSBDevice(usb)
+		if err != nil {
+			log.Fatal(err)
+		}
+		args = append(args, "-device", device)
+	}
+	return args
+}
+
+func qemu9frontCmd(qcow string) []string {
 	m := map[string][]string{
 		"amd64": {
 			filepath.Join(*qpathFlag, "qemu-system-x86_64"),
@@ -137,17 +155,44 @@ func qemuCmd(qcow string) []string {
 		log.Fatal("unsupported arch")
 	}
 	r[len(r)-1] = r[len(r)-1] + ",file=" + qcow
-	if len(usbFlags) > 0 {
-		r = append(r, "-device", "qemu-xhci,id=xhci")
-		for _, usb := range usbFlags {
-			device, err := qemuUSBDevice(usb)
-			if err != nil {
-				log.Fatal(err)
-			}
-			r = append(r, "-device", device)
-		}
+	return appendUSBDevices(r)
+}
+
+func qemuFreeBSDCmd(qcow, iso string) []string {
+	if *archFlag != "amd64" {
+		log.Fatal("FreeBSD currently supports amd64 only")
 	}
-	return r
+
+	args := []string{
+		filepath.Join(*qpathFlag, "qemu-system-x86_64"),
+		"-enable-kvm",
+		"-m",
+		*ramFlag,
+		"-smp",
+		*cpuFlag,
+		"-nic",
+		"user,hostfwd=tcp::10022-:22",
+		"-drive",
+		"file=" + qcow + ",if=virtio,media=disk",
+	}
+
+	switch *freebsdBoot {
+	case "install":
+		if iso == "" {
+			log.Fatal("FreeBSD install boot requires -iso")
+		}
+		args = append(args, "-cdrom", iso, "-boot", "order=d")
+	case "disk":
+		args = append(args, "-boot", "order=c")
+	default:
+		log.Fatalf("unsupported FreeBSD boot mode: %s", *freebsdBoot)
+	}
+
+	if *noguiFlag {
+		args = append(args, "-nographic")
+	}
+
+	return appendUSBDevices(args)
 }
 
 func fatalExpect(errCh <-chan error, context string, err error) {
@@ -173,12 +218,10 @@ func mustSend(exp *expect.GExpect, errCh <-chan error, in string) {
 	}
 }
 
-func main() {
-	flag.Parse()
-
+func diskPath(defaultName string) string {
 	var qcow string
 	if *diskFlag == "" {
-		qcow = fmt.Sprintf("9front.%s.%s.qcow2", *fsFlag, *archFlag)
+		qcow = defaultName
 	} else {
 		qcow = *diskFlag
 	}
@@ -186,8 +229,12 @@ func main() {
 		fmt.Fprintf(os.Stderr, "could not find %s\n", qcow)
 		os.Exit(1)
 	}
+	return qcow
+}
 
-	qemuArgs := qemuCmd(qcow)
+func run9front() {
+	qcow := diskPath(fmt.Sprintf("9front.%s.%s.qcow2", *fsFlag, *archFlag))
+	qemuArgs := qemu9frontCmd(qcow)
 	cm := strings.Join(qemuArgs, " ")
 	if *debugFlag {
 		fmt.Println(cm)
@@ -248,4 +295,42 @@ func main() {
 	mustSend(exp, errCh, "fshalt\n")
 	mustExpect(exp, errCh, "done halting")
 	exp.Close()
+}
+
+func runFreeBSD() {
+	qcow := diskPath(fmt.Sprintf("freebsd.%s.qcow2", *archFlag))
+	if *freebsdBoot == "install" {
+		if *isoFlag == "" {
+			log.Fatal("FreeBSD install boot requires -iso")
+		}
+		if _, err := os.Stat(*isoFlag); err != nil {
+			fmt.Fprintf(os.Stderr, "could not find %s\n", *isoFlag)
+			os.Exit(1)
+		}
+	}
+
+	qemuArgs := qemuFreeBSDCmd(qcow, *isoFlag)
+	if *debugFlag {
+		fmt.Println(strings.Join(qemuArgs, " "))
+	}
+	cmd := exec.Command(qemuArgs[0], qemuArgs[1:]...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func main() {
+	flag.Parse()
+
+	switch *osFlag {
+	case "9front":
+		run9front()
+	case "freebsd":
+		runFreeBSD()
+	default:
+		log.Fatalf("unsupported os: %s", *osFlag)
+	}
 }

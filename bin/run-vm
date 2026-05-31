@@ -3,9 +3,9 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: bin/run-vm [--fs hjfs|cwfs|gefs] [--disk PATH] [--drawterm PATH] [--usb SPEC] [--nogui] [run-flags...]
+Usage: bin/run-vm [--os 9front|freebsd] [--fs hjfs|cwfs|gefs] [--release N | --latest] [--disk PATH] [--drawterm PATH] [--usb SPEC] [--nogui] [run-flags...]
 
-Starts a local 9front amd64 VM and connects with drawterm.
+Starts a local amd64 VM.
 USB passthrough SPEC may be repeated and must be bus=BUS,addr=ADDR or vendor=VID,product=PID.
 Extra flags are passed through to the Go launcher in ./run.
 EOF
@@ -29,71 +29,146 @@ drawterm_bin=""
 nogui=0
 pass_args=()
 usb_args=()
+guest_os="9front"
+release="15.0"
+latest=0
+iso_kind="disc1"
+iso=""
+freebsd_boot="install"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --fs)
-      [[ $# -ge 2 ]] || die "--fs requires a value"
-      fs="$2"
-      shift 2
-      ;;
-    --disk)
-      [[ $# -ge 2 ]] || die "--disk requires a value"
-      disk="$2"
-      shift 2
-      ;;
-    --drawterm)
-      [[ $# -ge 2 ]] || die "--drawterm requires a value"
-      drawterm_bin="$2"
-      shift 2
-      ;;
-    --usb)
-      [[ $# -ge 2 ]] || die "--usb requires a value"
-      usb_args+=("$2")
-      shift 2
-      ;;
-    --nogui)
-      nogui=1
-      shift
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      pass_args+=("$1")
-      shift
-      ;;
+  --os)
+    [[ $# -ge 2 ]] || die "--os requires a value"
+    guest_os="$2"
+    shift 2
+    ;;
+  --fs)
+    [[ $# -ge 2 ]] || die "--fs requires a value"
+    fs="$2"
+    shift 2
+    ;;
+  --disk)
+    [[ $# -ge 2 ]] || die "--disk requires a value"
+    disk="$2"
+    shift 2
+    ;;
+  --drawterm)
+    [[ $# -ge 2 ]] || die "--drawterm requires a value"
+    drawterm_bin="$2"
+    shift 2
+    ;;
+  --release)
+    [[ $# -ge 2 ]] || die "--release requires a value"
+    release="$2"
+    shift 2
+    ;;
+  --latest)
+    latest=1
+    shift
+    ;;
+  --iso-kind)
+    [[ $# -ge 2 ]] || die "--iso-kind requires a value"
+    iso_kind="$2"
+    shift 2
+    ;;
+  --iso)
+    [[ $# -ge 2 ]] || die "--iso requires a value"
+    iso="$2"
+    shift 2
+    ;;
+  --freebsd-boot)
+    [[ $# -ge 2 ]] || die "--freebsd-boot requires a value"
+    freebsd_boot="$2"
+    shift 2
+    ;;
+  --usb)
+    [[ $# -ge 2 ]] || die "--usb requires a value"
+    usb_args+=("$2")
+    shift 2
+    ;;
+  --nogui)
+    nogui=1
+    shift
+    ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  *)
+    pass_args+=("$1")
+    shift
+    ;;
   esac
 done
 
+case "$guest_os" in
+9front | freebsd)
+  ;;
+*)
+  die "unsupported os: $guest_os"
+  ;;
+esac
+
 case "$fs" in
-  hjfs|cwfs|gefs)
-    ;;
-  *)
-    die "unsupported filesystem: $fs"
-    ;;
+hjfs | cwfs | gefs)
+  ;;
+*)
+  die "unsupported filesystem: $fs"
+  ;;
 esac
 
 need_cmd go
 need_cmd qemu-system-x86_64
 
-if [[ -z "$drawterm_bin" ]]; then
+if [[ "$guest_os" == "9front" && -z "$drawterm_bin" ]]; then
   drawterm_bin="$(command -v drawterm || true)"
 fi
-[[ -n "$drawterm_bin" ]] || die "drawterm not found on PATH"
-if [[ "$drawterm_bin" == */* ]]; then
+if [[ "$guest_os" == "9front" ]]; then
+  [[ -n "$drawterm_bin" ]] || die "drawterm not found on PATH"
+fi
+if [[ -n "$drawterm_bin" && "$drawterm_bin" == */* ]]; then
   drawterm_bin="$(cd "$(dirname "$drawterm_bin")" && pwd)/$(basename "$drawterm_bin")"
 fi
 
 if [[ -z "$disk" ]]; then
-  disk="9front.${fs}.amd64.qcow2"
+  case "$guest_os" in
+  9front)
+    disk="9front.${fs}.amd64.qcow2"
+    ;;
+  freebsd)
+    disk="freebsd.amd64.qcow2"
+    ;;
+  esac
 fi
 
 [[ -f "$disk" ]] || die "disk image not found: $disk"
 disk="$(cd "$(dirname "$disk")" && pwd)/$(basename "$disk")"
 
-cmd=(go run . -arch amd64 -fs "$fs" -disk "$disk" -dt "$drawterm_bin")
+cmd=(go run . -os "$guest_os" -arch amd64 -fs "$fs" -disk "$disk")
+if [[ "$guest_os" == "9front" ]]; then
+  cmd+=(-dt "$drawterm_bin")
+fi
+if [[ "$guest_os" == "freebsd" ]]; then
+  if [[ "$latest" -eq 1 ]]; then
+    release="15.1-BETA2"
+  fi
+  cmd+=(-freebsd-boot "$freebsd_boot")
+  if [[ "$freebsd_boot" == "install" ]]; then
+    if [[ -z "$iso" ]]; then
+      cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/9front-in-a-box"
+      if [[ "$release" == *-* ]]; then
+        iso_name="FreeBSD-${release}-amd64-${iso_kind}.iso"
+      else
+        iso_name="FreeBSD-${release}-RELEASE-amd64-${iso_kind}.iso"
+      fi
+      iso="${cache_root}/freebsd/releases/${release}/${iso_name}"
+    fi
+    [[ -f "$iso" ]] || die "installer ISO not found: $iso"
+    iso="$(cd "$(dirname "$iso")" && pwd)/$(basename "$iso")"
+    cmd+=(-iso "$iso")
+  fi
+fi
 if [[ "$nogui" -eq 1 ]]; then
   cmd+=(-nogui)
 fi
